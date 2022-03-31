@@ -1,17 +1,20 @@
-from keras.layers import Layer, Input, Conv2D, Activation, add, BatchNormalization, UpSampling2D, ZeroPadding2D, Conv2DTranspose, Flatten, MaxPooling2D, AveragePooling2D, concatenate
+from keras.layers import Layer, Input, Conv3D, Activation, add, BatchNormalization, UpSampling3D, ZeroPadding3D, Conv3DTranspose, Flatten, MaxPooling3D, AveragePooling3D
+#from keras_contrib.layers.normalization import InstanceNormalization, InputSpec
 from keras_contrib.layers import InstanceNormalization
 from keras.layers import InputSpec
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.core import Dense
 from keras.optimizers import Adam
+#from tensorflow.keras.optimizers import Adam
 from keras.backend import mean
 from keras.models import Model, model_from_json
 from keras.utils import plot_model
-#from keras.engine.topology import Container
 from keras.engine.network import Network as Container
+from keras.callbacks import TensorBoard
 
 from collections import OrderedDict
 #from scipy.misc import imsave, toimage  # has depricated
+import nibabel as nib
 from keras.preprocessing.image import save_img
 from keras.preprocessing.image import load_img
 from keras.preprocessing.image import img_to_array
@@ -28,13 +31,19 @@ join = os.path.join
 
 import keras.backend as K
 import tensorflow as tf
+# CPU only
+if False:
+    os.environ["CUDA_VISIBLE_DEVICES"]="-1"    
 
-import load_data
-import nibabel as nib
-
-PATH = '/mnt/data2/retinasim/retinaGAN2d' #'/mnt/ml/cycleGAN'
-OPATH = '/mnt/data2/retinasim/retinaGAN2d' # '/home/simon/Desktop/Share/cycleGAN'
+import load_data3d
+PATH = '/mnt/data2/retinasim/retinaGAN' #'/mnt/ml/cycleGAN'
+OPATH = '/mnt/data2/retinasim/retinaGAN' # '/home/simon/Desktop/Share/cycleGAN'
 LPATH = join(OPATH,'log')
+
+np.random.seed(seed=12345)
+dim = 64
+shape = (500,500,8,1)
+#shape = (6,250,16,1)
 
 # Set the logger
 from logger import Logger
@@ -72,13 +81,9 @@ if not os.path.exists(img_log_dir):
     os.mkdir(img_log_dir)
 img_logger = Logger(img_log_dir)
 
-
-np.random.seed(seed=12345)
-
-
-class CycleGAN():
-    def __init__(self, lr_D=2e-4, lr_G=2e-4, image_shape=(600,600,3), #(304, 256, 1),
-                 date_time_string_addition='', image_folder='',date_time_string='', resume=False):
+class CycleGAN3d():
+    def __init__(self, lr_D=2e-4, lr_G=2e-4, image_shape=shape,
+                 date_time_string_addition='',date_time_string='', image_folder='', resume=False): #sim2data{}'.format(dim)):
         self.img_shape = image_shape
         self.channels = self.img_shape[-1]
         self.normalization = InstanceNormalization
@@ -93,7 +98,8 @@ class CycleGAN():
         self.beta_1 = 0.5
         self.beta_2 = 0.999
         self.batch_size = 1
-        self.epochs = 2000  # choose multiples of 25 since the models are save each 25th epoch
+        self.epochs = 20000  # choose multiples of 25 since the models are save each 25th epoch
+        self.initial_epoch = 1
         self.save_interval = 1
         self.synthetic_pool_size = 50
 
@@ -120,6 +126,7 @@ class CycleGAN():
 
         # Fetch data during training instead of pre caching all images - might be necessary for large datasets
         self.use_data_generator = True
+        self.images_per_epoch = 250
 
         # Tweaks
         self.REAL_LABEL = 1.0  # Use e.g. 0.9 to avoid training the discriminators to zero loss
@@ -129,9 +136,13 @@ class CycleGAN():
             self.date_time = time.strftime('%Y%m%d-%H%M%S', time.localtime()) + date_time_string_addition
         else:
             self.date_time = date_time_string + date_time_string_addition
-        #self.date_time = time.strftime('%Y%m%d-%H%M%S', time.localtime()) + date_time_string_addition
-
-        with tf.device("/gpu:1"):
+            
+        #mirrored_strategy = tf.distribute.MirroredStrategy()
+        #with mirrored_strategy.scope():
+        
+        #with tf.device("/gpu:0"):
+        if True:
+        
             # optimizer
             self.opt_D = Adam(self.learning_rate_D, self.beta_1, self.beta_2)
             self.opt_G = Adam(self.learning_rate_G, self.beta_1, self.beta_2)
@@ -146,7 +157,6 @@ class CycleGAN():
                 D_B = self.modelDiscriminator()
                 loss_weights_D = [0.5]  # 0.5 since we train on real and synthetic images
             # D_A.summary()
-            breakpoint()
 
             # Discriminator builds
             image_A = Input(shape=self.img_shape)
@@ -179,48 +189,48 @@ class CycleGAN():
             self.G_B2A = self.modelGenerator(name='G_B2A_model')
             # self.G_A2B.summary()
 
-        if self.use_identity_learning:
-            self.G_A2B.compile(optimizer=self.opt_G, loss='MAE')
-            self.G_B2A.compile(optimizer=self.opt_G, loss='MAE')
+            if self.use_identity_learning:
+                self.G_A2B.compile(optimizer=self.opt_G, loss='MAE')
+                self.G_B2A.compile(optimizer=self.opt_G, loss='MAE')
 
-        # Generator builds
-        real_A = Input(shape=self.img_shape, name='real_A')
-        real_B = Input(shape=self.img_shape, name='real_B')
-        synthetic_B = self.G_A2B(real_A)
-        synthetic_A = self.G_B2A(real_B)
-        dA_guess_synthetic = self.D_A_static(synthetic_A)
-        dB_guess_synthetic = self.D_B_static(synthetic_B)
-        reconstructed_A = self.G_B2A(synthetic_B)
-        reconstructed_B = self.G_A2B(synthetic_A)
+            # Generator builds
+            real_A = Input(shape=self.img_shape, name='real_A')
+            real_B = Input(shape=self.img_shape, name='real_B')
+            synthetic_B = self.G_A2B(real_A)
+            synthetic_A = self.G_B2A(real_B)
+            dA_guess_synthetic = self.D_A_static(synthetic_A)
+            dB_guess_synthetic = self.D_B_static(synthetic_B)
+            reconstructed_A = self.G_B2A(synthetic_B)
+            reconstructed_B = self.G_A2B(synthetic_A)
 
-        model_outputs = [reconstructed_A, reconstructed_B]
-        compile_losses = [self.cycle_loss, self.cycle_loss,
-                          self.lse, self.lse]
-        compile_weights = [self.lambda_1, self.lambda_2,
-                           self.lambda_D, self.lambda_D]
+            model_outputs = [reconstructed_A, reconstructed_B]
+            compile_losses = [self.cycle_loss, self.cycle_loss,
+                              self.lse, self.lse]
+            compile_weights = [self.lambda_1, self.lambda_2,
+                               self.lambda_D, self.lambda_D]
 
-        if self.use_multiscale_discriminator:
-            for _ in range(2):
-                compile_losses.append(self.lse)
-                compile_weights.append(self.lambda_D)  # * 1e-3)  # Lower weight to regularize the model
-            for i in range(2):
-                model_outputs.append(dA_guess_synthetic[i])
-                model_outputs.append(dB_guess_synthetic[i])
-        else:
-            model_outputs.append(dA_guess_synthetic)
-            model_outputs.append(dB_guess_synthetic)
+            if self.use_multiscale_discriminator:
+                for _ in range(2):
+                    compile_losses.append(self.lse)
+                    compile_weights.append(self.lambda_D)  # * 1e-3)  # Lower weight to regularize the model
+                for i in range(2):
+                    model_outputs.append(dA_guess_synthetic[i])
+                    model_outputs.append(dB_guess_synthetic[i])
+            else:
+                model_outputs.append(dA_guess_synthetic)
+                model_outputs.append(dB_guess_synthetic)
 
-        if self.use_supervised_learning:
-            model_outputs.append(synthetic_A)
-            model_outputs.append(synthetic_B)
-            compile_losses.append('MAE')
-            compile_losses.append('MAE')
-            compile_weights.append(self.supervised_weight)
-            compile_weights.append(self.supervised_weight)
+            if self.use_supervised_learning:
+                model_outputs.append(synthetic_A)
+                model_outputs.append(synthetic_B)
+                compile_losses.append('MAE')
+                compile_losses.append('MAE')
+                compile_weights.append(self.supervised_weight)
+                compile_weights.append(self.supervised_weight)
 
-        self.G_model = Model(inputs=[real_A, real_B],
-                             outputs=model_outputs,
-                             name='G_model')
+            self.G_model = Model(inputs=[real_A, real_B],
+                                 outputs=model_outputs,
+                                 name='G_model')
 
         self.G_model.compile(optimizer=self.opt_G,
                              loss=compile_losses,
@@ -241,14 +251,21 @@ class CycleGAN():
         sys.stdout.flush()
 
         if self.use_data_generator:
-            self.data_generator = load_data.load_data(
-                nr_of_channels=self.batch_size, generator=True, subfolder=image_folder, path=PATH)
+            self.data_generator = load_data3d.load_data(nr_of_channels=self.channels,
+                                   batch_size=self.batch_size,
+                                   #nr_A_train_imgs=nr_A_train_imgs,
+                                   #nr_B_train_imgs=nr_B_train_imgs,
+                                   #nr_A_test_imgs=nr_A_test_imgs,
+                                   #nr_B_test_imgs=nr_B_test_imgs,
+                                   subfolder=image_folder,
+                                   path=PATH,
+                                   generator=True)
 
             # Only store test images
             nr_A_train_imgs = 0
             nr_B_train_imgs = 0
 
-        data = load_data.load_data(nr_of_channels=self.channels,
+        data = load_data3d.load_data(nr_of_channels=self.channels,
                                    batch_size=self.batch_size,
                                    nr_A_train_imgs=nr_A_train_imgs,
                                    nr_B_train_imgs=nr_B_train_imgs,
@@ -267,10 +284,10 @@ class CycleGAN():
             print('Data has been loaded')
 
         # ======= Create designated run folder and store meta data ==========
-        directory = os.path.join(PATH,'images', self.date_time)
+        directory = os.path.join(OPATH,'images', self.date_time)
         if not os.path.exists(directory):
             os.makedirs(directory)
-        #self.writeMetaDataToJSON()
+        self.writeMetaDataToJSON()
 
         # ======= Avoid pre-allocating GPU memory ==========
         # TensorFlow wizardry
@@ -282,7 +299,6 @@ class CycleGAN():
         # Create a session with the above options specified.
         K.tensorflow_backend.set_session(tf.Session(config=config))
         
-        self.initial_epoch = 0
         if resume:         
             self.load_model_and_weights(self.G_A2B)
             self.load_model_and_weights(self.G_B2A)
@@ -302,14 +318,14 @@ class CycleGAN():
         # ======= Initialize training ==========
         sys.stdout.flush()
         #plot_model(self.G_A2B, to_file='GA2B_expanded_model_new.png', show_shapes=True)
-        self.train(epochs=self.epochs, batch_size=self.batch_size, save_interval=self.save_interval)
+        self.train(epochs=self.epochs, batch_size=self.batch_size, save_interval=self.save_interval,initial_epoch=initial_epoch)
         #self.load_model_and_generate_synthetic_images()
 
 #===============================================================================
 # Architecture functions
 
     def ck(self, x, k, use_normalization, stride):
-        x = Conv2D(filters=k, kernel_size=4, strides=stride, padding='same')(x)
+        x = Conv3D(filters=k, kernel_size=4, strides=stride, padding='same')(x)
         # Normalization is not done on the first discriminator layer
         if use_normalization:
             x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
@@ -317,52 +333,49 @@ class CycleGAN():
         return x
 
     def c7Ak(self, x, k):
-        x = Conv2D(filters=k, kernel_size=7, strides=1, padding='valid')(x)
+        x = Conv3D(filters=k, kernel_size=7, strides=1, padding='valid')(x)
         x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
         x = Activation('relu')(x)
         return x
 
     def dk(self, x, k):
-        x = Conv2D(filters=k, kernel_size=3, strides=2, padding='same')(x)
-        conv = x
+        x = Conv3D(filters=k, kernel_size=3, strides=2, padding='same')(x)
         x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
         x = Activation('relu')(x)
-        return x, conv
+        return x
 
     def Rk(self, x0):
         k = int(x0.shape[-1])
         # first layer
-        x = Conv2D(filters=k, kernel_size=3, strides=1, padding='same')(x0)
+        x = Conv3D(filters=k, kernel_size=3, strides=1, padding='same')(x0)
         x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
         x = Activation('relu')(x)
         # second layer
-        x = Conv2D(filters=k, kernel_size=3, strides=1, padding='same')(x)
+        x = Conv3D(filters=k, kernel_size=3, strides=1, padding='same')(x)
         x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
         # merge
         x = add([x, x0])
         return x
 
-    def uk(self, x, k, skip=None):
+    def uk(self, x, k):
         # (up sampling followed by 1x1 convolution <=> fractional-strided 1/2)
         if self.use_resize_convolution:
-            x = UpSampling2D(size=(2, 2))(x)  # Nearest neighbor upsampling
-            x = ReflectionPadding2D((1, 1))(x)
-            x = Conv2D(filters=k, kernel_size=3, strides=1, padding='valid')(x)
+            x = UpSampling3D(size=(2, 2))(x)  # Nearest neighbor upsampling
+            #x = ReflectionPadding3D((1, 1))(x)
+            x = Conv3D(filters=k, kernel_size=3, strides=1, padding='valid')(x)
         else:
-            x = Conv2DTranspose(filters=k, kernel_size=3, strides=2, padding='same')(x)  # this matches fractionally stided with stride 1/2
-            if skip is not None:
-                x = concatenate([x, skip], axis=3)
+            x = Conv3DTranspose(filters=k, kernel_size=3, strides=2, padding='same')(x)  # this matches fractionally stided with stride 1/2
         x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
         x = Activation('relu')(x)
-        return x
+        return x        
 
 #===============================================================================
 # Models
 
     def modelMultiScaleDiscriminator(self, name=None):
         x1 = Input(shape=self.img_shape)
-        x2 = AveragePooling2D(pool_size=(2, 2))(x1)
-        #x4 = AveragePooling2D(pool_size=(2, 2))(x2)
+        x2 = AveragePooling3D(pool_size=(2, 2, 2))(x1)
+        #x4 = AveragePooling3D(pool_size=(2, 2, 2))(x2)
 
         out_x1 = self.modelDiscriminator('D1')(x1)
         out_x2 = self.modelDiscriminator('D2')(x2)
@@ -379,19 +392,11 @@ class CycleGAN():
         x = self.ck(x, 128, True, 2)
         # Layer 3
         x = self.ck(x, 256, True, 2)
-        
-        ###TEST
-        x = self.ck(x, 256, True, 2)
-        x = self.ck(x, 256, True, 2)
-        x = self.ck(x, 256, True, 2)
-        x = self.ck(x, 256, True, 2)
-        x = self.ck(x, 256, True, 2)
-        
         # Layer 4
         x = self.ck(x, 512, True, 1)
         # Output layer
         if self.use_patchgan:
-            x = Conv2D(filters=1, kernel_size=4, strides=1, padding='same')(x)
+            x = Conv3D(filters=1, kernel_size=4, strides=1, padding='same')(x)
         else:
             x = Flatten()(x)
             x = Dense(1)(x)
@@ -402,49 +407,31 @@ class CycleGAN():
         # Specify input
         input_img = Input(shape=self.img_shape)
         # Layer 1
-        x = ReflectionPadding2D((3, 3))(input_img)
+        x = ReflectionPadding3D((3, 3, 3))(input_img)
         x = self.c7Ak(x, 32)
         # Layer 2
-        x,c0 = self.dk(x, 64)
+        x = self.dk(x, 64)
         # Layer 3
-        x,c1 = self.dk(x, 128)
-        
-        ###TEST (512x512 image)
-        x,c2 = self.dk(x, 256)
-        x,c3 = self.dk(x, 256)
-        x,c4 = self.dk(x, 256)
-        x,c5 = self.dk(x, 256)
-        x,c6 = self.dk(x, 256)
-        x,c7 = self.dk(x, 256)
-        #x,c8 = self.dk(x, 256) # Final one seems to break it...
-
+        x = self.dk(x, 128)
 
         if self.use_multiscale_discriminator:
             # Layer 3.5
-            x,c9 = self.dk(x, 256)
+            x = self.dk(x, 256)
 
         # Layer 4-12: Residual layer
-        #for _ in range(11, 13):
-        #    x = self.Rk(x)
+        for _ in range(4, 13):
+            x = self.Rk(x)
 
         if self.use_multiscale_discriminator:
             # Layer 12.5
             x = self.uk(x, 128)
 
-        x = self.uk(x, 256,skip=c6)
-        x = self.uk(x, 256,skip=c5)
-        x = self.uk(x, 256,skip=c4)
-        x = self.uk(x, 256,skip=c3)
-        x = self.uk(x, 256,skip=c2)
-        x = self.uk(x, 256,skip=c1)
-        #x = self.uk(x, 256)
-
         # Layer 13
-        x = self.uk(x, 64,skip=c0)
+        x = self.uk(x, 64)
         # Layer 14
         x = self.uk(x, 32)
-        x = ReflectionPadding2D((3, 3))(x)
-        x = Conv2D(self.channels, kernel_size=7, strides=1)(x)
+        x = ReflectionPadding3D((3, 3, 3))(x)
+        x = Conv3D(self.channels, kernel_size=7, strides=1)(x)
         x = Activation('tanh')(x)  # They say they use Relu but really they do not
         return Model(inputs=input_img, outputs=x, name=name)
 
@@ -452,21 +439,21 @@ class CycleGAN():
 # Test - simple model
     def modelSimple(self, name=None):
         inputImg = Input(shape=self.img_shape)
-        #x = Conv2D(1, kernel_size=5, strides=1, padding='same')(inputImg)
+        #x = Conv3D(1, kernel_size=5, strides=1, padding='same')(inputImg)
         #x = Dense(self.channels)(x)
-        x = Conv2D(256, kernel_size=1, strides=1, padding='same')(inputImg)
+        x = Conv3D(256, kernel_size=1, strides=1, padding='same')(inputImg)
         x = Activation('relu')(x)
-        x = Conv2D(self.channels, kernel_size=1, strides=1, padding='same')(x)
+        x = Conv3D(self.channels, kernel_size=1, strides=1, padding='same')(x)
 
         return Model(input=inputImg, output=x, name=name)
 
-    def trainSimpleModel(self):
+    def trainSimpleModel(self,initial_epoch=1):
         real_A = self.A_test[0]
         real_B = self.B_test[0]
         real_A = real_A[np.newaxis, :, :, :]
         real_B = real_B[np.newaxis, :, :, :]
         epochs = 200
-        for epoch in range(epochs):
+        for epoch in range(initial_epoch,epochs):
             print('Epoch {} started'.format(epoch))
             self.G_A2B.fit(x=self.A_train, y=self.B_train, epochs=1, batch_size=1)
             self.G_B2A.fit(x=self.B_train, y=self.A_train, epochs=1, batch_size=1)
@@ -481,12 +468,19 @@ class CycleGAN():
 
 #===============================================================================
 # Training
-    def train(self, epochs, batch_size=1, save_interval=1):
+    def train(self, epochs, batch_size=1, save_interval=1, initial_epoch=1):
+    
+        #tbCallBack = TensorBoard(log_dir='./log', histogram_freq=1, write_graph=False, write_images=False)
+        
         def run_training_iteration(loop_index, epoch_iterations):
             # ======= Discriminator training ==========
                 # Generate batch of synthetic images
-            synthetic_images_B = self.G_A2B.predict(real_images_A)
-            synthetic_images_A = self.G_B2A.predict(real_images_B)
+            try:
+                synthetic_images_B = self.G_A2B.predict(real_images_A)
+                synthetic_images_A = self.G_B2A.predict(real_images_B)
+            except Exception as e:
+                print(e,epoch)
+                return
             synthetic_images_A = synthetic_pool_A.query(synthetic_images_A)
             synthetic_images_B = synthetic_pool_B.query(synthetic_images_B)
 
@@ -630,20 +624,35 @@ class CycleGAN():
         # Start stopwatch for ETAs
         start_time = time.time()
 
-        for epoch in range(1, epochs + 1):
+        for epoch in range(initial_epoch, epochs + 1):
             if self.use_data_generator:
                 loop_index = 1
-                for ii,images in enumerate(self.data_generator):
-                    #if ii==5:
-                    #    break
-                    real_images_A = images[0]
-                    real_images_B = images[1]
-                    if len(real_images_A.shape) == 3:
-                        real_images_A = real_images_A[:, :, :, np.newaxis]
-                        real_images_B = real_images_B[:, :, :, np.newaxis]
+                nloop = 20
+                loop_inds = np.random.choice(np.linspace(1,self.data_generator.__len__(),self.data_generator.__len__()),nloop)
+                for im,images in enumerate(self.data_generator):
+                    #breakpoint()
+                    loop_ind = int(loop_inds[loop_index-1])
+                    #loop_ind = 371
+                    #breakpoint()
+                    
+                    real_images_A = self.data_generator[loop_ind][0]  #images[0]
+                    real_images_B = self.data_generator[loop_ind][1]  #images[1]
+
+                    if len(real_images_A.shape) == 4:
+                        real_images_A = real_images_A[:, :, :, :, np.newaxis]
+                        real_images_B = real_images_B[:, :, :, :, np.newaxis]
 
                     # Run all training steps
-                    run_training_iteration(loop_index, self.data_generator.__len__())
+                    run_training_iteration(loop_ind, self.data_generator.__len__())
+                    
+                    # ============ TensorBoard logging ============#
+                    #print('Tensorboard:',DA_loss,DB_loss,gA_d_loss_synthetic,gB_d_loss_synthetic,reconstruction_loss_A,reconstruction_loss_B)
+                    D_A_logger.scalar_summary('losses', DA_losses[-1], loop_index)
+                    D_B_logger.scalar_summary('losses', DB_losses[-1], loop_index)
+                    G_A_logger.scalar_summary('losses', gA_d_losses_synthetic[-1], loop_index)
+                    G_B_logger.scalar_summary('losses', gB_d_losses_synthetic[-1], loop_index)
+                    #cycle_A_logger.scalar_summary('losses', reconstruction_losses[-1], loop_index)
+                    #cycle_B_logger.scalar_summary('losses', reconstruction_losses_B[-1], loop_index)
 
                     # Store models
                     if loop_index % 20000 == 0:
@@ -653,7 +662,8 @@ class CycleGAN():
                         self.saveModel(self.G_B2A, loop_index)
 
                     # Break if loop has ended
-                    if loop_index >= self.data_generator.__len__():
+                    #if loop_index >= self.data_generator.__len__() or loop_index>=self.images_per_epoch:
+                    if loop_index >= nloop or loop_index>=self.images_per_epoch:
                         break
 
                     loop_index += 1
@@ -707,16 +717,18 @@ class CycleGAN():
                     real_images_B = B_train[indexes_B]
 
                     # Run all training steps
-                    run_training_iteration(loop_index, epoch_iterations)
+                    D_A_loss,D_B_loss,G_A_loss = run_training_iteration(loop_index, epoch_iterations)
+                    
+                    # ============ TensorBoard logging ============#
+
 
             #================== within epoch loop end ==========================
 
             if epoch % save_interval == 0:
                 print('\n', '\n', '-------------------------Saving images for epoch', epoch, '-------------------------', '\n', '\n')
-                print('2D version!"')
                 self.saveImages(epoch, real_images_A, real_images_B)
 
-            if epoch % 5 == 0:
+            if epoch % 20 == 0:
                 # self.saveModel(self.G_model)
                 self.saveModel(self.D_A, epoch)
                 self.saveModel(self.D_B, epoch)
@@ -750,24 +762,23 @@ class CycleGAN():
         return loss
 
     def truncateAndSave(self, real_, real, synthetic, reconstructed, path_name):
-        if len(real.shape) > 3:
+        if len(real.shape) > 4:
             real = real[0]
             synthetic = synthetic[0]
             reconstructed = reconstructed[0]
 
         # Append and save
         if real_ is not None:
-            if len(real_.shape) > 4:
+            if len(real_.shape) > 5:
                 real_ = real_[0]
             image = np.hstack((real_[0], real, synthetic, reconstructed))
         else:
             image = np.hstack((real, synthetic, reconstructed))
 
         if self.channels == 1:
-            image = image[:, :, 0]
+            image = image[:, :, :, 0]
 
         #toimage(image, cmin=-1, cmax=1).save(path_name)
-        #save_img(path_name, image)
         img = nib.Nifti1Image(np.clip(image,-1,1),np.eye(4))
         nib.save(img,path_name)
 
@@ -807,16 +818,20 @@ class CycleGAN():
                     real_image_Ab = np.expand_dims(real_image_Ab, axis=0)
                     real_image_Ba = np.expand_dims(real_image_Ba, axis=0)
 
-            synthetic_image_B = self.G_A2B.predict(real_image_A)
-            synthetic_image_A = self.G_B2A.predict(real_image_B)
-            reconstructed_image_A = self.G_B2A.predict(synthetic_image_B)
-            reconstructed_image_B = self.G_A2B.predict(synthetic_image_A)
+            try:
+                synthetic_image_B = self.G_A2B.predict(real_image_A)
+                synthetic_image_A = self.G_B2A.predict(real_image_B)
+                reconstructed_image_A = self.G_B2A.predict(synthetic_image_B)
+                reconstructed_image_B = self.G_A2B.predict(synthetic_image_A)
+            except Exception as e:
+                print(e)
+                return
 
             self.truncateAndSave(real_image_Ab, real_image_A, synthetic_image_B, reconstructed_image_A,
-                                 join(OPATH,'images/{}/{}/epoch{}_sample{}.nii'.format(
+                                 os.path.join(OPATH,'images/{}/{}/epoch{}_sample{}.nii'.format(
                                      self.date_time, 'A' + testString, epoch, i)))
             self.truncateAndSave(real_image_Ba, real_image_B, synthetic_image_A, reconstructed_image_B,
-                                 join(OPATH,'images/{}/{}/epoch{}_sample{}.nii'.format(
+                                 os.path.join(OPATH,'images/{}/{}/epoch{}_sample{}.nii'.format(
                                      self.date_time, 'B' + testString, epoch, i)))
 
     def save_tmp_images(self, real_image_A, real_image_B, synthetic_image_A, synthetic_image_B):
@@ -829,7 +844,7 @@ class CycleGAN():
             reconstructed_images = np.vstack((reconstructed_image_A[0], reconstructed_image_B[0]))
 
             self.truncateAndSave(None, real_images, synthetic_images, reconstructed_images,
-                                 join(OPATH,'images/{}/{}.nii'.format(
+                                 os.path.join(OPATH,'images/{}/{}.nii'.format(
                                      self.date_time, 'tmp')))
         except: # Ignore if file is open
             pass
@@ -845,6 +860,7 @@ class CycleGAN():
         updates_per_epoch_G = max_nr_images + self.generator_iterations - 1
         if self.use_identity_learning:
             updates_per_epoch_G *= (1 + 1 / self.identity_mapping_modulus)
+
         denominator_D = (self.epochs - self.decay_epoch) * updates_per_epoch_D
         denominator_G = (self.epochs - self.decay_epoch) * updates_per_epoch_G
         decay_D = self.learning_rate_D / denominator_D
@@ -877,13 +893,13 @@ class CycleGAN():
 
     def saveModel(self, model, epoch):
         # Create folder to save model architecture and weights
-        directory = os.path.join(OPATH,'saved_models', self.date_time)
+        directory = os.path.join(PATH,'saved_models', self.date_time)
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-        model_path_w = join(OPATH,'saved_models/{}/{}_weights_epoch_{}.hdf5'.format(self.date_time, model.name, epoch))
+        model_path_w = os.path.join(PATH,'saved_models/{}/{}_weights_epoch_{}.hdf5'.format(self.date_time, model.name, epoch))
         model.save_weights(model_path_w)
-        model_path_m = join(OPATH,'saved_models/{}/{}_model_epoch_{}.json'.format(self.date_time, model.name, epoch))
+        model_path_m = os.path.join(PATH,'saved_models/{}/{}_model_epoch_{}.json'.format(self.date_time, model.name, epoch))
         model.save_weights(model_path_m)
         json_string = model.to_json()
         with open(model_path_m, 'w') as outfile:
@@ -892,14 +908,14 @@ class CycleGAN():
 
     def writeLossDataToFile(self, history):
         keys = sorted(history.keys())
-        with open(join(OPATH,'images/{}/loss_output.csv'.format(self.date_time)), 'w') as csv_file:
+        with open(os.path.join(OPATH,'images/{}/loss_output.csv'.format(self.date_time)), 'w') as csv_file:
             writer = csv.writer(csv_file, delimiter=',')
             writer.writerow(keys)
             writer.writerows(zip(*[history[key] for key in keys]))
 
     def writeMetaDataToJSON(self):
 
-        directory = os.path.join('images', self.date_time)
+        directory = os.path.join(OPATH,'images', self.date_time)
         if not os.path.exists(directory):
             os.makedirs(directory)
         # Save meta_data
@@ -931,33 +947,34 @@ class CycleGAN():
             'number of B test examples': len(self.B_test),
         })
 
-        with open(PATH+'images/{}/meta_data.json'.format(self.date_time), 'w') as outfile:
+        with open(os.path.join(OPATH,'images/{}/meta_data.json'.format(self.date_time)), 'w') as outfile:
             json.dump(data, outfile, sort_keys=True)
 
-    def load_model_and_weights(self, model):
-    
-        from os import listdir
-        path = join(OPATH,'saved_models', '{}'.format(self.date_time))
-        weight_files = [f for f in listdir(path) if f.endswith('hdf5') and model.name in f]
-        epoch = []
-        for f in weight_files:
-            try:
-                epoch.append(int(f.replace('{}_weights_epoch_'.format(model.name),'').replace('.hdf5','')))
-            except Exception as e:
-                print(e)
-                epoch.append(-1)
-        epoch = np.asarray(epoch)
-        resume_epoch = np.max(epoch)
-        resume_weights = weight_files[np.argmax(epoch)]
-        #path_to_model = os.path.join(OPATH,'images', 'models', '{}.json'.format(model.name))
-        path_to_weights = os.path.join(path, resume_weights)
-        self.initial_epoch = resume_epoch + 1
-    
-    
-        #path_to_model = os.path.join('generate_images', 'models', '{}.json'.format(model.name))
-        #path_to_weights = os.path.join('generate_images', 'models', '{}.hdf5'.format(model.name))
-        ##model = model_from_json(path_to_model)
-        #model.load_weights(path_to_weights)
+    def load_model_and_weights(self, model, generate=False):
+        if generate:
+            path_to_model = os.path.join(OPATH,'generate_images', 'models', '{}.json'.format(model.name))
+            path_to_weights = os.path.join(OPATH,'generate_images', 'models', '{}.hdf5'.format(model.name))
+        else:
+            join = os.path.join
+            from os import listdir
+            path = join(OPATH,'saved_models', '{}'.format(self.date_time))
+            weight_files = [f for f in listdir(path) if f.endswith('hdf5') and model.name in f]
+            epoch = []
+            for f in weight_files:
+                try:
+                    epoch.append(int(f.replace('{}_weights_epoch_'.format(model.name),'').replace('.hdf5','')))
+                except Exception as e:
+                    print(e)
+                    epoch.append(-1)
+            epoch = np.asarray(epoch)
+            resume_epoch = np.max(epoch)
+            resume_weights = weight_files[np.argmax(epoch)]
+            #path_to_model = os.path.join(OPATH,'images', 'models', '{}.json'.format(model.name))
+            path_to_weights = os.path.join(path, resume_weights)
+            self.initial_epoch = resume_epoch + 1
+        #model = model_from_json(path_to_model)
+        if True:
+            model.load_weights(path_to_weights)
 
     def load_model_and_generate_synthetic_images(self):
         response = input('Are you sure you want to generate synthetic images instead of training? (y/n): ')[0].lower()
@@ -967,26 +984,27 @@ class CycleGAN():
             synthetic_images_B = self.G_A2B.predict(self.A_test)
             synthetic_images_A = self.G_B2A.predict(self.B_test)
 
-            def save_image(image, name, domain):
+            def save_volume(image, name, domain):
                 if self.channels == 1:
                     image = image[:, :, 0]
                 #toimage(image, cmin=-1, cmax=1).save(os.path.join(
                 #    'generate_images', 'synthetic_images', domain, name))
-                save_img(os.path.join('generate_images','synthetic_images',domain,name), image)
+                img = nib.Nifti1Image(np.clip(image,-1,1),np.eye(4))
+                nib.save(img,os.path.join(OPATH,'generate_images','synthetic_images',domain,name))
 
             # Test A images
             for i in range(len(synthetic_images_A)):
                 # Get the name from the image it was conditioned on
-                name = self.testB_image_names[i].strip('.png') + '_synthetic.png'
+                name = self.testB_image_names[i].strip('.nii') + '_synthetic.nii'
                 synt_A = synthetic_images_A[i]
-                save_image(synt_A, name, 'A')
+                save_volume(synt_A, name, 'A')
 
             # Test B images
             for i in range(len(synthetic_images_B)):
                 # Get the name from the image it was conditioned on
-                name = self.testA_image_names[i].strip('.png') + '_synthetic.png'
+                name = self.testA_image_names[i].strip('.nii') + '_synthetic.nii'
                 synt_B = synthetic_images_B[i]
-                save_image(synt_B, name, 'B')
+                save_volume(synt_B, name, 'B')
 
             print('{} synthetic images have been generated and placed in ./generate_images/synthetic_images'
                   .format(len(self.A_test) + len(self.B_test)))
@@ -994,18 +1012,18 @@ class CycleGAN():
 
 # reflection padding taken from
 # https://github.com/fastai/courses/blob/master/deeplearning2/neural-style.ipynb
-class ReflectionPadding2D(Layer):
-    def __init__(self, padding=(1, 1), **kwargs):
+class ReflectionPadding3D(Layer):
+    def __init__(self, padding=(1, 1, 1), **kwargs):
         self.padding = tuple(padding)
-        self.input_spec = [InputSpec(ndim=4)]
-        super(ReflectionPadding2D, self).__init__(**kwargs)
+        self.input_spec = [InputSpec(ndim=5)]
+        super(ReflectionPadding3D, self).__init__(**kwargs)
 
     def compute_output_shape(self, s):
-        return (s[0], s[1] + 2 * self.padding[0], s[2] + 2 * self.padding[1], s[3])
+        return (s[0], s[1] + 2 * self.padding[0], s[2] + 2 * self.padding[1], s[3] + 2 * self.padding[2], s[4])
 
     def call(self, x, mask=None):
-        w_pad, h_pad = self.padding
-        return tf.pad(x, [[0, 0], [h_pad, h_pad], [w_pad, w_pad], [0, 0]], 'REFLECT')
+        w_pad, h_pad, d_pad = self.padding
+        return tf.pad(x, [[0, 0], [h_pad, h_pad], [w_pad, w_pad], [d_pad, d_pad], [0, 0]], 'REFLECT')
 
 
 class ImagePool():
@@ -1020,8 +1038,8 @@ class ImagePool():
             return images
         return_images = []
         for image in images:
-            if len(image.shape) == 3:
-                image = image[np.newaxis, :, :, :]
+            if len(image.shape) == 4:
+                image = image[np.newaxis, :, :, :, :]
 
             if self.num_imgs < self.pool_size:  # fill up the image pool
                 self.num_imgs = self.num_imgs + 1
@@ -1039,9 +1057,9 @@ class ImagePool():
                 p = random.uniform(0, 1)
                 if p > 0.5:
                     random_id = random.randint(0, self.pool_size - 1)
-                    tmp = self.images[random_id, :, :, :]
-                    tmp = tmp[np.newaxis, :, :, :]
-                    self.images[random_id, :, :, :] = image[0, :, :, :]
+                    tmp = self.images[random_id, :, :, :, :]
+                    tmp = tmp[np.newaxis, :, :, :, :]
+                    self.images[random_id, :, :, :, :] = image[0, :, :, :, :]
                     if len(return_images) == 0:
                         return_images = tmp
                     else:
@@ -1056,5 +1074,5 @@ class ImagePool():
 
 
 if __name__ == '__main__':
-
-    GAN = CycleGAN(image_shape=[512,512,1])#,date_time_string='20220328-111210',resume=True)
+    GAN = CycleGAN3d(date_time_string='20220321-103912',resume=True)
+    #GAN = CycleGAN3d()

@@ -76,7 +76,7 @@ img_logger = Logger(img_log_dir)
 np.random.seed(seed=12345)
 
 
-class CycleGAN():
+class ProgCycleGAN():
     def __init__(self, lr_D=2e-4, lr_G=2e-4, image_shape=(600,600,3), #(304, 256, 1),
                  date_time_string_addition='', image_folder='',date_time_string='', resume=False):
         self.img_shape = image_shape
@@ -130,6 +130,107 @@ class CycleGAN():
         else:
             self.date_time = date_time_string + date_time_string_addition
         #self.date_time = time.strftime('%Y%m%d-%H%M%S', time.localtime()) + date_time_string_addition
+        
+        self.create_full_model()
+        prog_models = self.create_progressive_models(self.G_A2B,self.G_B2A,self.D_A.layers[1],self.D_B.layers[1])
+        prog_G_models = prog_models[0] + [self.G_model]
+        prog_G_A2B = prog_models[1] + [self.G_A2B]
+        prog_G_B2A = prog_models[2] + [self.G_B2A]
+        prog_D_A = prog_models[3] + [self.D_A]
+        prog_D_B = prog_models[4] + [self.D_B]
+        prog_D_A_static = prog_models[5] + [self.D_A_static]
+        prog_D_B_static = prog_models[6] + [self.D_B_static]
+        
+        # TEST
+        self.G_model = prog_G_models[0]
+        self.G_A2B = prog_G_A2B[0]
+        self.G_B2A = prog_G_B2A[0]
+        self.D_A = prog_D_A[0]
+        self.D_B = prog_D_B[0]
+        self.D_A_static = prog_D_A_static[0]
+        self.D_B_static = prog_D_B_static[0]
+        self.img_shape = [2,2,1]
+
+    # ======= Data ==========
+        # Use 'None' to fetch all available images
+        nr_A_train_imgs = None
+        nr_B_train_imgs = None
+        nr_A_test_imgs = None
+        nr_B_test_imgs = None
+
+        if self.use_data_generator:
+            print('--- Using dataloader during training ---')
+        else:
+            print('--- Caching data ---')
+        sys.stdout.flush()
+
+        if self.use_data_generator:
+            self.data_generator = load_data.load_data(
+                nr_of_channels=self.batch_size, generator=True, subfolder=image_folder, path=PATH, imsize=self.img_shape[0:2])
+
+            # Only store test images
+            nr_A_train_imgs = 0
+            nr_B_train_imgs = 0
+
+        data = load_data.load_data(nr_of_channels=self.channels,
+                                   batch_size=self.batch_size,
+                                   nr_A_train_imgs=nr_A_train_imgs,
+                                   nr_B_train_imgs=nr_B_train_imgs,
+                                   nr_A_test_imgs=nr_A_test_imgs,
+                                   nr_B_test_imgs=nr_B_test_imgs,
+                                   subfolder=image_folder,
+                                   path=PATH,imsize=self.img_shape[0:2])
+
+        self.A_train = data["trainA_images"]
+        self.B_train = data["trainB_images"]
+        self.A_test = data["testA_images"]
+        self.B_test = data["testB_images"]
+        self.testA_image_names = data["testA_image_names"]
+        self.testB_image_names = data["testB_image_names"]
+        if not self.use_data_generator:
+            print('Data has been loaded')
+
+        # ======= Create designated run folder and store meta data ==========
+        directory = os.path.join(PATH,'images', self.date_time)
+
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        #self.writeMetaDataToJSON()
+
+        # ======= Avoid pre-allocating GPU memory ==========
+        # TensorFlow wizardry
+        config = tf.ConfigProto()
+
+        # Don't pre-allocate memory; allocate as-needed
+        config.gpu_options.allow_growth = True
+
+        # Create a session with the above options specified.
+        K.tensorflow_backend.set_session(tf.Session(config=config))
+        
+        self.initial_epoch = 0
+        if resume:         
+            self.load_model_and_weights(self.G_A2B)
+            self.load_model_and_weights(self.G_B2A)
+            self.load_model_and_weights(self.D_A)
+            self.load_model_and_weights(self.D_B)
+        initial_epoch = self.initial_epoch
+
+        # ===== Tests ======
+        # Simple Model
+#         self.G_A2B = self.modelSimple('simple_T1_2_T2_model')
+#         self.G_B2A = self.modelSimple('simple_T2_2_T1_model')
+#         self.G_A2B.compile(optimizer=Adam(), loss='MAE')
+#         self.G_B2A.compile(optimizer=Adam(), loss='MAE')
+#         # self.trainSimpleModel()
+#         self.load_model_and_generate_synthetic_images()
+
+        # ======= Initialize training ==========
+        sys.stdout.flush()
+        #plot_model(self.G_A2B, to_file='GA2B_expanded_model_new.png', show_shapes=True)
+        self.train(epochs=self.epochs, batch_size=self.batch_size, save_interval=self.save_interval)
+        #self.load_model_and_generate_synthetic_images()
+
+    def create_full_model(self):
 
         with tf.device("/gpu:1"):
             # optimizer
@@ -146,7 +247,6 @@ class CycleGAN():
                 D_B = self.modelDiscriminator()
                 loss_weights_D = [0.5]  # 0.5 since we train on real and synthetic images
             # D_A.summary()
-            breakpoint()
 
             # Discriminator builds
             image_A = Input(shape=self.img_shape)
@@ -226,85 +326,142 @@ class CycleGAN():
                              loss=compile_losses,
                              loss_weights=compile_weights)
         # self.G_A2B.summary()
-
-        # ======= Data ==========
-        # Use 'None' to fetch all available images
-        nr_A_train_imgs = None
-        nr_B_train_imgs = None
-        nr_A_test_imgs = None
-        nr_B_test_imgs = None
-
-        if self.use_data_generator:
-            print('--- Using dataloader during training ---')
-        else:
-            print('--- Caching data ---')
-        sys.stdout.flush()
-
-        if self.use_data_generator:
-            self.data_generator = load_data.load_data(
-                nr_of_channels=self.batch_size, generator=True, subfolder=image_folder, path=PATH)
-
-            # Only store test images
-            nr_A_train_imgs = 0
-            nr_B_train_imgs = 0
-
-        data = load_data.load_data(nr_of_channels=self.channels,
-                                   batch_size=self.batch_size,
-                                   nr_A_train_imgs=nr_A_train_imgs,
-                                   nr_B_train_imgs=nr_B_train_imgs,
-                                   nr_A_test_imgs=nr_A_test_imgs,
-                                   nr_B_test_imgs=nr_B_test_imgs,
-                                   subfolder=image_folder,
-                                   path=PATH)
-
-        self.A_train = data["trainA_images"]
-        self.B_train = data["trainB_images"]
-        self.A_test = data["testA_images"]
-        self.B_test = data["testB_images"]
-        self.testA_image_names = data["testA_image_names"]
-        self.testB_image_names = data["testB_image_names"]
-        if not self.use_data_generator:
-            print('Data has been loaded')
-
-        # ======= Create designated run folder and store meta data ==========
-        directory = os.path.join(PATH,'images', self.date_time)
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-        #self.writeMetaDataToJSON()
-
-        # ======= Avoid pre-allocating GPU memory ==========
-        # TensorFlow wizardry
-        config = tf.ConfigProto()
-
-        # Don't pre-allocate memory; allocate as-needed
-        config.gpu_options.allow_growth = True
-
-        # Create a session with the above options specified.
-        K.tensorflow_backend.set_session(tf.Session(config=config))
         
-        self.initial_epoch = 0
-        if resume:         
-            self.load_model_and_weights(self.G_A2B)
-            self.load_model_and_weights(self.G_B2A)
-            self.load_model_and_weights(self.D_A)
-            self.load_model_and_weights(self.D_B)
-        initial_epoch = self.initial_epoch
+    # PROGRESSIVE MODELS ---------------------------
 
-        # ===== Tests ======
-        # Simple Model
-#         self.G_A2B = self.modelSimple('simple_T1_2_T2_model')
-#         self.G_B2A = self.modelSimple('simple_T2_2_T1_model')
-#         self.G_A2B.compile(optimizer=Adam(), loss='MAE')
-#         self.G_B2A.compile(optimizer=Adam(), loss='MAE')
-#         # self.trainSimpleModel()
-#         self.load_model_and_generate_synthetic_images()
+    def create_progressive_models(self, G_A2B,G_B2A,D_A,D_B):
+    
+        # Discriminators
+        #breakpoint()
+        prog_D_A, prog_D_B, prog_D_A_static, prog_D_B_static, D_input_shape = [], [], [], [], []
+        for j,model in enumerate([D_A,D_B]):
+            
+            nlayers = len(model.layers)
+            conv_layers = [i for i,x in enumerate(model.layers) if 'conv' in x.name][:-2]
+            depth = len(conv_layers)
+            
+            for i in range(depth):
+                enc_layers = model.layers[np.flip(conv_layers)[i]:]
+                img_shape = [int(enc_layers[0].output.shape[1]),int(enc_layers[0].output.shape[2]),1]
+                D_input_shape.append(img_shape)
+                print(img_shape)
+                input_layer = Input(shape=img_shape)
+                # Linear scale-up
+                x = Conv2D(int(enc_layers[0].input.shape[-1]),(1,1))(input_layer)
+                for layer in enc_layers:
+                    x = layer(x)
+                    
+                model1 = Model(input_layer,x)                
 
-        # ======= Initialize training ==========
-        sys.stdout.flush()
-        #plot_model(self.G_A2B, to_file='GA2B_expanded_model_new.png', show_shapes=True)
-        self.train(epochs=self.epochs, batch_size=self.batch_size, save_interval=self.save_interval)
-        #self.load_model_and_generate_synthetic_images()
+                # Use containers to avoid falsy keras error about weight descripancies
+                image_A = Input(shape=img_shape)
+                guess_A = model1(image_A)
+                loss_weights_D = [0.5]
+                
+                model1 = Model(inputs=image_A, outputs=guess_A, name='D_A_model')
+                model1.compile(optimizer=self.opt_D,
+                               loss=self.lse,
+                               loss_weights=loss_weights_D)
+                               
+                if j==0:
+                    prog_D_A.append(model1)
+                    name = 'D_A_static_model_{}'.format(j)
+                    prog_D_A_static.append(Container(inputs=image_A, outputs=guess_A, name=name))
+                    prog_D_A_static[-1].trainable = False
+                else:
+                    prog_D_B.append(model1)
+                    name = 'D_B_static_model_{}'.format(j)
+                    prog_D_B_static.append(Container(inputs=image_A, outputs=guess_A, name=name))
+                    prog_D_B_static[-1].trainable = False
+        
+        # Generators
+        prog_G_A2B, prog_G_B2A, G_input_shape = [], [], []
+        for j,model in enumerate([G_A2B,G_B2A]):
+        
+            # Find  upsample layers
+            nlayers = len(model.layers)
+            transpose_layers = [i for i,x in enumerate(model.layers) if 'transpose' in x.name]
+            conv_layers = [i for i,x in enumerate(model.layers) if 'conv' in x.name]
+            nconv = len(transpose_layers)
+            depth = nconv #int(nconv / 2)
+            enc_conv_layers = np.asarray(([x for x in conv_layers if x not in transpose_layers and x<np.min(transpose_layers)]))
+            
+            for i in range(depth):
+                
+                enc_dec_layers = model.layers[np.flip(enc_conv_layers)[i]:transpose_layers[i]+3] # add 3 to end to incorporate transpose layer, normalization and activations
 
+                img_shape = [int(enc_dec_layers[0].output.shape[1]),int(enc_dec_layers[0].output.shape[2]),1]
+                G_input_shape.append(img_shape)
+                print(img_shape)
+                #input_layer = self.modelGenerator(input_only=True)
+                input_layer = Input(shape=img_shape)
+                #x = ReflectionPadding2D((3, 3))(input_layer)
+                # Linear scale-up
+                x = Conv2D(int(enc_dec_layers[0].input.shape[-1]),(1,1))(input_layer)
+                for layer in enc_dec_layers[:-1]: # Miss out final activation layer
+                    x = layer(x)
+                    
+                x = Conv2D(1, (1,1))(x)
+                x = Activation('tanh')(x)  # They say they use Relu but really they do not
+                    
+                model1 = Model(input_layer,x) #,name=name+'_fadeIn')
+                
+                if j==0:
+                    prog_G_A2B.append(model1)
+                else:
+                    prog_G_B2A.append(model1)
+        
+        # Generator builds
+        nprog = len(prog_G_A2B)
+        prog_G_model = []
+        for j in range(nprog):
+            real_A = Input(shape=G_input_shape[j], name='real_A_{}'.format(j))
+            real_B = Input(shape=G_input_shape[j], name='real_B_{}'.format(j))
+            synthetic_B = prog_G_A2B[j](real_A)
+            synthetic_A = prog_G_B2A[j](real_B)
+            dA_guess_synthetic = prog_D_A_static[j](synthetic_A)
+            dB_guess_synthetic = prog_D_B_static[j](synthetic_B)
+            reconstructed_A = prog_G_A2B[j](synthetic_B)
+            reconstructed_B = prog_G_B2A[j](synthetic_A)
+
+            model_outputs = [reconstructed_A, reconstructed_B]
+            compile_losses = [self.cycle_loss, self.cycle_loss,
+                              self.lse, self.lse]
+            compile_weights = [self.lambda_1, self.lambda_2,
+                               self.lambda_D, self.lambda_D]
+
+            if self.use_multiscale_discriminator:
+                for _ in range(2):
+                    compile_losses.append(self.lse)
+                    compile_weights.append(self.lambda_D)  # * 1e-3)  # Lower weight to regularize the model
+                for i in range(2):
+                    model_outputs.append(dA_guess_synthetic[i])
+                    model_outputs.append(dB_guess_synthetic[i])
+            else:
+                model_outputs.append(dA_guess_synthetic)
+                model_outputs.append(dB_guess_synthetic)
+
+            if self.use_supervised_learning:
+                model_outputs.append(synthetic_A)
+                model_outputs.append(synthetic_B)
+                compile_losses.append('MAE')
+                compile_losses.append('MAE')
+                compile_weights.append(self.supervised_weight)
+                compile_weights.append(self.supervised_weight)
+
+            G_model = Model(inputs=[real_A, real_B],
+                                 outputs=model_outputs,
+                                 name='G_model')
+
+            G_model.compile(optimizer=self.opt_G,
+                                 loss=compile_losses,
+                                 loss_weights=compile_weights)
+                                 
+            prog_G_model.append(G_model)
+            
+        return prog_G_model, prog_G_A2B, prog_G_B2A, prog_D_A, prog_D_B, prog_D_A_static, prog_D_B_static
+
+        
 #===============================================================================
 # Architecture functions
 
@@ -398,12 +555,16 @@ class CycleGAN():
         #x = Activation('sigmoid')(x) - No sigmoid to avoid near-fp32 machine epsilon discriminator cost
         return Model(inputs=input_img, outputs=x, name=name)
 
-    def modelGenerator(self, name=None):
+    def modelGenerator(self, name=None, input_only=False, add_skips=False):
         # Specify input
         input_img = Input(shape=self.img_shape)
         # Layer 1
-        x = ReflectionPadding2D((3, 3))(input_img)
+        x = ReflectionPadding2D((3, 3))(input_img)        
         x = self.c7Ak(x, 32)
+        
+        if input_only:
+            return x
+        
         # Layer 2
         x,c0 = self.dk(x, 64)
         # Layer 3
@@ -431,16 +592,27 @@ class CycleGAN():
             # Layer 12.5
             x = self.uk(x, 128)
 
-        x = self.uk(x, 256,skip=c6)
-        x = self.uk(x, 256,skip=c5)
-        x = self.uk(x, 256,skip=c4)
-        x = self.uk(x, 256,skip=c3)
-        x = self.uk(x, 256,skip=c2)
-        x = self.uk(x, 256,skip=c1)
-        #x = self.uk(x, 256)
-
-        # Layer 13
-        x = self.uk(x, 64,skip=c0)
+        if add_skips:
+            x = self.uk(x, 256,skip=c6)
+            x = self.uk(x, 256,skip=c5)
+            x = self.uk(x, 256,skip=c4)
+            x = self.uk(x, 256,skip=c3)
+            x = self.uk(x, 256,skip=c2)
+            x = self.uk(x, 256,skip=c1)
+            #x = self.uk(x, 256)
+            # Layer 13
+            x = self.uk(x, 64,skip=c0)
+        else:
+            x = self.uk(x, 256)
+            x = self.uk(x, 256)
+            x = self.uk(x, 256)
+            x = self.uk(x, 256)
+            x = self.uk(x, 256)
+            x = self.uk(x, 256)
+            #x = self.uk(x, 256)
+            # Layer 13
+            x = self.uk(x, 64)
+            
         # Layer 14
         x = self.uk(x, 32)
         x = ReflectionPadding2D((3, 3))(x)
@@ -1057,4 +1229,4 @@ class ImagePool():
 
 if __name__ == '__main__':
 
-    GAN = CycleGAN(image_shape=[512,512,1])#,date_time_string='20220328-111210',resume=True)
+    GAN = ProgCycleGAN(image_shape=[512,512,1])#,date_time_string='20220328-111210',resume=True)
