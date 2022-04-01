@@ -261,6 +261,7 @@ class ProgCycleGAN():
         epochs = np.zeros(len(prog_G_models),dtype='int') + 20
         batch_size = np.ones(len(prog_G_models),dtype='int')
         ep = [2,5,5,8,8,10]
+        ep = [1,1,1,1,1,1]
         epochs[:len(ep)] = ep
         bs = [10,10,10,10,10,5]
         batch_size[:len(bs)] = bs
