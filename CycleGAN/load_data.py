@@ -129,7 +129,7 @@ class data_sequence(Sequence):
     def __len__(self):
         return int(max(len(self.train_A), len(self.train_B)) / float(self.batch_size))
 
-    def __getitem__(self, idx, imsize=None):  # , use_multiscale_discriminator, use_supervised_learning):if loop_index + batch_size >= min_nr_imgs:
+    def __getitem__(self, idx):  # , use_multiscale_discriminator, use_supervised_learning):if loop_index + batch_size >= min_nr_imgs:
         if idx >= min(len(self.train_A), len(self.train_B)):
             # If all images soon are used for one domain,
             # randomly pick from this domain
@@ -146,11 +146,31 @@ class data_sequence(Sequence):
                     batch_B.append(self.train_B[i])
                 batch_A = self.train_A[idx * self.batch_size:(idx + 1) * self.batch_size]
         else:
-            batch_A = self.train_A[idx * self.batch_size:(idx + 1) * self.batch_size]
-            batch_B = self.train_B[idx * self.batch_size:(idx + 1) * self.batch_size]
+            x0,x1 = idx * self.batch_size, (idx + 1) * self.batch_size
+            if x0>=len(self.train_A):
+                inds = np.random.choice(np.linspace(0,len(self.train_A)-1,len(self.train_A),dtype='int'),self.batch_size)
+                batch_A = [self.train_A[x] for x in inds]
+            elif x1>=len(self.train_A):
+                inds = np.arange(x0,len(self.train_A)-1,1,dtype='int')
+                inds = np.concatonate([inds,np.random.choice(np.linspace(0,len(self.train_A)-1,len(self.train_A),dtype='int'),self.batch_size-inds.shape[0])])
+                batch_A = [self.train_A[x] for x in inds]
+            else:
+                batch_A = self.train_A[x0:x1]
+                
+            x0,x1 = idx * self.batch_size, (idx + 1) * self.batch_size
+            if x0>=len(self.train_B): # If outside range of images, draw randomly
+                inds = np.random.choice(np.linspace(0,len(self.train_B)-1,len(self.train_B),dtype='int'),self.batch_size)
+                batch_B = [self.train_B[x] for x in inds]
+            elif x1>=len(self.train_B): # If end limit is outside image range, add on random selection to end
+                inds = np.linspace(x0,len(self.train_B)-1,len(self.train_B)-x0,dtype='int')
+                inds = np.concatenate([inds,np.random.choice(np.linspace(0,len(self.train_B)-1,len(self.train_B),dtype='int'),self.batch_size-inds.shape[0])])
+                batch_B = [self.train_B[x] for x in inds]
+            else:
+                batch_B = self.train_B[x0:x1]
+            #batch_B = self.train_B[idx * self.batch_size:(idx + 1) * self.batch_size]
 
-        if imsize is None:
-            imsize = self.imsize
+        #if imsize is None:
+        imsize = self.imsize
         real_images_A = create_image_array(batch_A, '', 1, imsize=imsize)
         real_images_B = create_image_array(batch_B, '', 1, imsize=imsize)
 
