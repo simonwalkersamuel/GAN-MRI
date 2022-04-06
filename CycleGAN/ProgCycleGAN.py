@@ -9,6 +9,7 @@ from keras.models import Model, model_from_json
 from keras.utils import plot_model
 #from keras.engine.topology import Container
 from keras.engine.network import Network as Container
+from keras.constraints import max_norm
 
 from collections import OrderedDict
 #from scipy.misc import imsave, toimage  # has depricated
@@ -36,6 +37,10 @@ import nibabel as nib
 
 PATH = '/mnt/data2/retinasim/retinaGAN2d' #'/mnt/ml/cycleGAN'
 OPATH = '/mnt/data2/retinasim/retinaGAN2d' # '/home/simon/Desktop/Share/cycleGAN'
+
+PATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' #'/mnt/ml/cycleGAN'
+OPATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' # '/home/simon/Desktop/Share/cycleGAN'
+
 LPATH = join(OPATH,'log')
 
 # Set the logger
@@ -131,7 +136,7 @@ class ProgCycleGAN():
         self.identity_mapping_modulus = 10  # Identity mapping will be done each time the iteration number is divisable with this number
 
         # PatchGAN - if false the discriminator learning rate should be decreased
-        self.use_patchgan = True
+        self.use_patchgan = False
 
         # Multi scale discriminator - if True the generator have an extra encoding/decoding step to match discriminator information access
         self.use_multiscale_discriminator = False
@@ -158,6 +163,7 @@ class ProgCycleGAN():
         
         self.create_full_model()
         prog_models = self.create_progressive_models(self.G_A2B,self.G_B2A,self.D_A.layers[1],self.D_B.layers[1])
+        #breakpoint()
         prog_G_models = prog_models[0] + [self.G_model]
         prog_G_A2B = prog_models[1] + [self.G_A2B]
         prog_G_B2A = prog_models[2] + [self.G_B2A]
@@ -166,17 +172,6 @@ class ProgCycleGAN():
         prog_D_A_static = prog_models[5] + [self.D_A_static]
         prog_D_B_static = prog_models[6] + [self.D_B_static]
         image_shape = prog_models[7] + [[512,512,1]]
-        
-        # TEST
-        if False:
-            self.G_model = prog_G_models[0]
-            self.G_A2B = prog_G_A2B[0]
-            self.G_B2A = prog_G_B2A[0]
-            self.D_A = prog_D_A[0]
-            self.D_B = prog_D_B[0]
-            self.D_A_static = prog_D_A_static[0]
-            self.D_B_static = prog_D_B_static[0]
-            self.img_shape = [2,2,1]
 
     # ======= Data ==========
         # Use 'None' to fetch all available images
@@ -257,16 +252,16 @@ class ProgCycleGAN():
         sys.stdout.flush()
         #plot_model(self.G_A2B, to_file='GA2B_expanded_model_new.png', show_shapes=True)
         
-        #breakpoint()
-        epochs = np.zeros(len(prog_G_models),dtype='int') + 20
+        epochs = np.zeros(len(prog_G_models),dtype='int') + 200
         batch_size = np.ones(len(prog_G_models),dtype='int')
-        ep = [2,5,5,8,8,10]
-        ep = [1,1,1,1,1,1]
+        ep = [1,10,20,20,50,50] #2,4,8,16,32,64,128
+        #ep = [1,1,1,1,1,1]
         epochs[:len(ep)] = ep
-        bs = [10,10,10,10,10,5]
+        bs = [10,10,5,5,5,5,1]
         batch_size[:len(bs)] = bs
         
-        m_init = 0
+        m_init = 0 # 7=256
+        #breakpoint()
         for i in range(m_init,len(prog_G_models)):
         #if True:
         #    i = len(prog_G_models)-1
@@ -404,21 +399,38 @@ class ProgCycleGAN():
         self.G_model.compile(optimizer=self.opt_G,
                              loss=compile_losses,
                              loss_weights=compile_weights)
+                             
+        # Embed layer sizes in the names
+        for layer in self.G_A2B.layers:
+            try:
+                layer.name = layer.name + '_' + str(int(layer.output.shape[1]))
+            except Exception as e:
+                print(e)
+                pass
+        for layer in self.G_B2A.layers:
+            try:
+                layer.name = layer.name + '_' + str(int(layer.output.shape[1]))
+            except Exception as e:
+                print(e)
+                pass
         # self.G_A2B.summary()
         
     # PROGRESSIVE MODELS ---------------------------
 
-    def create_progressive_models(self, G_A2B,G_B2A,D_A,D_B):
+    def create_progressive_models(self, G_A2B,G_B2A,D_A,D_B,fadein=True,add_skips=True):
+    
+        depth0 = 0
     
         # Discriminators
         prog_D_A, prog_D_B, prog_D_A_static, prog_D_B_static, D_input_shape = [], [], [], [], []
         for j,model in enumerate([D_A,D_B]):
             
             nlayers = len(model.layers)
-            conv_layers = [i for i,x in enumerate(model.layers) if 'conv' in x.name][:-2]
+            conv_layers = [i for i,x in enumerate(model.layers) if 'conv2d' in x.name] #[:-1] #[:-2]
             depth = len(conv_layers)
+            #breakpoint()
             
-            for i in range(depth):
+            for i in range(depth0+1,depth):
                 enc_layers = model.layers[np.flip(conv_layers)[i]:]
                 img_shape = [int(enc_layers[0].output.shape[1]),int(enc_layers[0].output.shape[2]),1]
                 D_input_shape.append(img_shape)
@@ -426,19 +438,43 @@ class ProgCycleGAN():
                 input_layer = Input(shape=img_shape)
                 # Linear scale-up
                 #x = Conv2D(int(enc_layers[0].input.shape[-1]),(1,1),kernel_initializer=Constant(0.))(input_layer)
-                x = Dense(int(enc_layers[0].input.shape[-1]),kernel_initializer=Constant(0.))(input_layer)
+                x = Dense(int(enc_layers[0].input.shape[-1]),kernel_constraint=max_norm(1.0),kernel_initializer=RandomNormal(stddev=0.02))(input_layer) 
                 #x.trainable = False
+                nconv = [1 for x in enc_layers if 'conv2d' in x.name]
+                conv_layers_cur, conv_inputs, ws_added = [], [], False
                 for layer in enc_layers:
-                    x = layer(x)
+                    if 'conv2d' in layer.name:
+                        conv_inputs.append(x)
+                    if 'flatten' in layer.name:
+                        x = Flatten()(x)
+                        x = Dense(1)(x)
+                        break
+                    else:
+                        print(x.name)
+                        x = layer(x)
+                    if 'conv2d' in layer.name:
+                        xin = x
+                        conv_layers_cur.append(x)
+                        if not ws_added and i>1 and fadein: # layer.name==model.layers[conv_layers[-1]].name and 
+                            mp = MaxPooling2D(pool_size=(2, 2))(conv_inputs[-1])
+                            if int(x.shape[-1])!=int(mp.shape[-1]):
+                                # Linear scale-up
+                                mp = Dense(int(x.shape[-1]),kernel_constraint=max_norm(1.0),kernel_initializer=RandomNormal(stddev=0.02))(mp)
+                            x = WeightedSum()([mp, x])
+                            ws_added = True
                     
-                model1 = Model(input_layer,x)                
+                model1 = Model(input_layer,x)              
 
                 # Use containers to avoid falsy keras error about weight descripancies
                 image_A = Input(shape=img_shape)
                 guess_A = model1(image_A)
                 loss_weights_D = [0.5]
                 
-                model1 = Model(inputs=image_A, outputs=guess_A, name='D_A_model')
+                if j==0:
+                    name='D_A_model'
+                else:
+                    name = 'D_B_model'
+                model1 = Model(inputs=image_A, outputs=guess_A, name=name)
                 model1.compile(optimizer=self.opt_D,
                                loss=self.lse,
                                loss_weights=loss_weights_D)
@@ -456,7 +492,6 @@ class ProgCycleGAN():
         
         # Generators
         prog_G_A2B, prog_G_B2A, G_input_shape = [], [], []
-        #breakpoint()
         #print('Build prog Gen')
         for j,model in enumerate([G_A2B,G_B2A]):
         
@@ -468,27 +503,48 @@ class ProgCycleGAN():
             depth = nconv #int(nconv / 2)
             enc_conv_layers = np.asarray(([x for x in conv_layers if x not in transpose_layers and x<np.min(transpose_layers)]))
             
-            for i in range(depth):
+            for i in range(depth0,depth):
                 
-                enc_dec_layers = model.layers[np.flip(enc_conv_layers)[i]:transpose_layers[i]+3] # add 3 to end to incorporate transpose layer, normalization and activations
+                # Identify encoding and decoding layers for current depth
+                enc_dec_layers = model.layers[np.flip(enc_conv_layers)[i]:transpose_layers[i]+4] # add 3 to end to incorporate transpose layer, normalization and activations
 
+                # Store image shape associated with current depth
                 img_shape = [int(enc_dec_layers[0].output.shape[1]),int(enc_dec_layers[0].output.shape[2]),1]
                 if j==0: # store layer dimensions
                     G_input_shape.append(img_shape)
                 print(img_shape)
-                #input_layer = self.modelGenerator(input_only=True)
-                input_layer = Input(shape=img_shape)
-                #x = ReflectionPadding2D((3, 3))(input_layer)
+                
+                # Create new input layer(s)
+                if False:
+                    input_layer = self.modelGenerator(input_only=True)
+                    x = input_layer
+                else:
+                    #breakpoint()
+                    input_layer = Input(shape=img_shape)
+                    x = ReflectionPadding2D((3, 3))(input_layer)        
+                    #x = self.c7Ak(x, 32)
+                    x = input_layer
                 
                 # Linear scale-up
-                #x = Conv2D(int(enc_dec_layers[0].input.shape[-1]),(1,1),kernel_initializer=Constant(0.))(input_layer)
-                x = Dense(int(enc_dec_layers[0].input.shape[-1]),kernel_initializer=Constant(0.))(input_layer)
+                if False:
+                    x = Conv2D(int(enc_dec_layers[0].output.shape[-1]),(1,1))(x) #,kernel_initializer=Constant(0.))(x)
+                elif True:
+                    x = Dense(int(enc_dec_layers[0].output.shape[-1]),kernel_constraint=max_norm(1.0),kernel_initializer=RandomNormal(stddev=0.02))(x) #,kernel_initializer=Constant(0.))(x)
+                    #x.trainable = False
+                else:
+                    pass
                 #x.trainable = False
+                
+                #x = ReflectionPadding2D((3, 3))(x)
                 
                 scaleup_layer = x
                 enc_dec_sizes, skips = [],[]
                 ws1_added,ws2_added = False, False
+                nc7Ak, ndk, nuk = 0, 0, 0
+                tr_layers,tr_layer_input = [],[]
                 for k,layer in enumerate(enc_dec_layers[:-1]): # Miss out final activation layer
+                
+                    #print(layer.name,x.shape)
                 
                     # Store skip connections
                     if 'conv2d' in layer.name:
@@ -498,45 +554,111 @@ class ProgCycleGAN():
                             
                     # Add layers
                     if 'add' in layer.name:
-                        x = add([x, skips[-1]]) #concatenate([x, skips[-1]], axis=3)
-                        skips.pop()
+                        if add_skips:
+                            x = add([x, skips[-1]]) #concatenate([x, skips[-1]], axis=3)
+                            skips.pop()
                     else:
                         #print(x.shape)
-                        x = layer(x)
+                        enc_block_in = x
+                        if nc7Ak==0 and 'conv2d_' in layer.name:
+                            #x = self.c7Ak(x, int(layer.output.shape[-1]))
+                            print('c7Ak ',x.name,x.shape)
+                            nc7Ak += 1
+                        elif 'conv2d_' in layer.name and 'transpose' not in layer.name:
+                            if False: # recreate
+                                x,c_ = self.dk(x, int(layer.input.shape[-1])) # 64
+                            else: # reuse
+                                enc_block_size = 3
+                                for kk in range(enc_block_size):
+                                    x = enc_dec_layers[k+kk](x)
+                                    print(x.name,x.shape)
+                                    if 'activation' in x.name:
+                                        break
+                            #breakpoint()
+                            ndk += 1
+                        elif 'conv2d_transpose' in layer.name:
+                            if nuk<ndk:
+                                print(ndk,nuk)
+                                tr_layers.append(layer)
+                                tr_layer_input.append(x) #enc_dec_layers[k-1])
+                                if False: # recreate
+                                    nfilt = int(layer.input.shape[-1])
+                                    x = self.uk(x, nfilt) # 64
+                                else: # reuse
+                                    enc_block_size = 5
+                                    for kk in range(enc_block_size):
+                                        if 'add' not in enc_dec_layers[k+kk].name:
+                                            x = enc_dec_layers[k+kk](x)
+                                            print(x.name,x.shape)
+                                            if 'activation' in x.name:
+                                                break
+                                nuk += 1
+                        elif False:
+                            print(layer.name)
+                            x = layer(x)
+                        else:
+                            pass
                         
                         # Add in weighted sum layer for blending
-                        if 'conv2d' in layer.name and not ws1_added and i>0:
+                        if fadein and 'conv2d' in layer.name and not ws1_added and ndk>0 and i>0:
                             mp = MaxPooling2D(pool_size=(2, 2))(scaleup_layer)
                             if int(x.shape[-1])!=int(mp.shape[-1]):
                                 # Linear scale-up
                                 #mp = Conv2D(int(x.shape[-1]),(1,1),kernel_initializer=Constant(0.))(mp)
-                                mp = Dense(int(x.shape[-1]),kernel_initializer=Constant(0.))(mp)
+                                mp = Dense(int(x.shape[-1]),kernel_constraint=max_norm(1.0),kernel_initializer=RandomNormal(stddev=0.02))(mp)
                                 #mp.trainable = False
                                 #print('Linear scale-up')
-                            x = WeightedSum()([x, mp])
+                            #breakpoint()
+                            x = WeightedSum()([mp,x])
                             ws1_added = True
 
-                if i>0: # Add weighted sum layers to decoder for blending
-                    tr_layers = [x for x in enc_dec_layers if 'conv2d_transpose' in x.name]
-                    x = tr_layers[-2].get_output_at(-1)
-                    mpd = UpSampling2D(size=(2, 2))(x)
-                    x = tr_layers[-1].get_output_at(-1)
+                if i>0 and fadein: # and False: # Add weighted sum layers to decoder for blending
                     #breakpoint()
+                    mpd = UpSampling2D(size=(2, 2))(tr_layer_input[-1]) #.get_output_at(0))
                     if int(x.shape[-1])!=int(mpd.shape[-1]):
-                        #breakpoint()
                         # Linear scale-down
-                        #mpd = Conv2D(int(x.shape[-1]),(1,1),kernel_initializer=Constant(0.))(x)
-                        mpd = Dense(int(x.shape[-1]),kernel_initializer=Constant(0.))(x)
-                        #x.trainable = False
-                    try:
-                        x = WeightedSum()([x, mpd])
-                    except:
-                        breakpoint()
+                        #mpd = Conv2D(int(x.shape[-1]),(1,1),kernel_initializer=Constant(0.))(mpd)
+                        mpd = Dense(int(x.shape[-1]),kernel_constraint=max_norm(1.0),kernel_initializer=RandomNormal(stddev=0.02))(mpd)
+                        print(mpd.name)
+                    x = WeightedSum()([mpd,x])
+                    print(x.name)
                     
-                x = Conv2D(1, (1,1),kernel_initializer=Constant(0.))(x)
-                #print(x.shape)
-                #x.trainable = False
-                x = Activation('tanh')(x)  # They say they use Relu but really they do not
+                    if False:
+                        tr_layers = [y for y in enc_dec_layers if 'conv2d_transpose' in y.name]
+                        #breakpoint()
+                        # Identify second-to-last transpose layer
+                        tr_2_layer_index = [i for i,y in enumerate(model.layers) if y.name==tr_layers[-2].name and y in enc_dec_layers]
+                        # Offset transpose layer to activation layer
+                        x_layer2 = model.layers[tr_2_layer_index[0]+3]
+                        x = x_layer2.get_output_at(-1) 
+                        #breakpoint()
+                        mpd = UpSampling2D(size=(2, 2))(x) # Up-scale the second-to-last transpose layer's activation
+                        #x = tr_layers[-1].get_output_at(-1) # Identify final transpose layer
+                        tr_1_layer_index = [i for i,y in enumerate(model.layers) if y.name==tr_layers[-1].name and y in enc_dec_layers]
+                        #x = tr_layers[-2].get_output_at(-1) 
+                        # Offset transpose layer to activation layer
+                        x_layer1 = model.layers[tr_1_layer_index[0]+3]
+                        x = x_layer1.get_output_at(-1) 
+                        #breakpoint()
+                        if int(x.shape[-1])!=int(mpd.shape[-1]):
+                            #breakpoint()
+                            # Linear scale-down
+                            #mpd = Conv2D(int(x.shape[-1]),(1,1),kernel_initializer=Constant(0.))(mpd)
+                            mpd = Dense(int(x.shape[-1]),kernel_constraint=max_norm(1.0),kernel_initializer=RandomNormal(stddev=0.02))(mpd)
+                            #x.trainable = False
+                        #breakpoint()
+                        x = WeightedSum()([mpd,x])
+                    
+                if True:
+                    #init = self.weight_initialisation()
+                    x = Conv2D(1, (1,1))(x) #,kernel_initializer=Constant(0.))(x)
+                    #print(x.shape)
+                    #x.trainable = False
+                    x = Activation('tanh')(x)  # They say they use Relu but really they do not
+                else:
+                    #x = ReflectionPadding2D((3, 3))(x)
+                    #x = Conv2D(self.channels, kernel_size=7, strides=1)(x)
+                    x = Activation('tanh')(x)  # They say they use Relu but really they do not
                     
                 model1 = Model(input_layer,x)
                 
@@ -544,12 +666,11 @@ class ProgCycleGAN():
                     prog_G_A2B.append(model1)
                 else:
                     prog_G_B2A.append(model1)
-                    
-        #breakpoint()
         
         # Generator builds
         nprog = len(prog_G_A2B)
         prog_G_model = []
+        #breakpoint()
         for j in range(nprog):
             real_A = Input(shape=G_input_shape[j], name='real_A_{}'.format(j))
             real_B = Input(shape=G_input_shape[j], name='real_B_{}'.format(j))
@@ -623,7 +744,7 @@ class ProgCycleGAN():
         conv = x
         x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
         x = Activation('relu')(x)
-        return x, conv
+        return x, x
 
     def Rk(self, x0):
         init = self.weight_initialisation()
@@ -648,10 +769,11 @@ class ProgCycleGAN():
             x = Conv2D(filters=k, kernel_size=3, strides=1, padding='valid',kernel_initializer=init)(x)
         else:
             x = Conv2DTranspose(filters=k, kernel_size=3, strides=2, padding='same',kernel_initializer=init)(x)  # this matches fractionally stided with stride 1/2
-            if skip is not None:
-                x = add([x, skip]) #concatenate([x, skip], axis=3)
+            
         x = self.normalization(axis=3, center=True, epsilon=1e-5)(x, training=True)
         x = Activation('relu')(x)
+        if skip is not None:
+            x = add([x, skip]) #concatenate([x, skip], axis=3)
         return x
 
 #===============================================================================
@@ -972,7 +1094,8 @@ class ProgCycleGAN():
                         real_images_B = real_images_B[:, :, :, np.newaxis]
 
                     # Run all training steps
-                    fadein_steps = int(np.ceil(epochs*len(self.data_generator)/2.))
+                    fadein_fraction = 0.25
+                    fadein_steps = int(np.ceil(epochs*len(self.data_generator)*fadein_fraction))
                     run_training_iteration(loop_index, self.data_generator.__len__(),fadein_steps=fadein_steps,counter=counter)
 
                     # Store models

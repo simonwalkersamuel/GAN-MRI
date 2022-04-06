@@ -34,6 +34,10 @@ import nibabel as nib
 
 PATH = '/mnt/data2/retinasim/retinaGAN2d' #'/mnt/ml/cycleGAN'
 OPATH = '/mnt/data2/retinasim/retinaGAN2d' # '/home/simon/Desktop/Share/cycleGAN'
+
+PATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' #'/mnt/ml/cycleGAN'
+OPATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' # '/home/simon/Desktop/Share/cycleGAN'
+
 LPATH = join(OPATH,'log')
 
 # Set the logger

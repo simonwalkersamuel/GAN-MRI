@@ -5,6 +5,7 @@ from keras.utils import Sequence
 #from skimage.io import imread
 join = os.path.join
 import nibabel as nib
+from matplotlib import pyplot as plt
 
 def load_data(nr_of_channels, batch_size=1, nr_A_train_imgs=None, nr_B_train_imgs=None,
               nr_A_test_imgs=None, nr_B_test_imgs=None, subfolder='',path='',
@@ -53,38 +54,45 @@ def create_image_array(image_list, image_path, nr_of_channels, imsize=[512,512])
     for image_name in image_list:
         if True: #image_name[-1].lower() == 'g':  # to avoid e.g. thumbs.db files
             if nr_of_channels == 1:  # Gray scale image -> MR image
-                # NIFTI
                 path = os.path.join(image_path, image_name)
-                img = nib.load(path)
-                image = np.array(img.dataobj)
+                if image_name.lower().endswith('.nii'):
+                    # NIFTI
+                    img = nib.load(path)
+                    image = np.array(img.dataobj)
+                    augment = True
+                    if 'trainB' in path and image.max()<=1.:
+                         #breakpoint()
+                         image *= 256
+                    
+                elif image_name.lower().endswith('.jpg'):
+                    image = np.array(Image.open(path).convert('L'))
+                    image = np.rot90(image,k=1,axes=[0,1])
+                    augment = False
                 
                 if imsize is not None:
                     #print('imsize:',imsize)
                     from skimage.transform import resize
-                    image = resize(image, imsize)
-                if 'trainB' in path and image.max()<=1.:
-                    #breakpoint()
-                    image *= 256
-                    #pass
+                    image = resize(image, imsize) * 255
                 
                 image = image[:, :, np.newaxis]
             else:                   # RGB image -> 3 channels
                 return None
  
-            nr = int(np.random.uniform(1,4))
-            k = np.random.uniform(0,4,nr).astype('int')
-            #axes = np.asarray([[0,1],[0,2],[1,2]])
-            axes = np.asarray([[0,1]])
-            axes_rnd = axes[np.random.choice(np.linspace(0,len(axes)-1,len(axes)),nr).astype('int')]
-            for i in range(nr):
-                image = np.rot90(image,k=k[i],axes=axes_rnd[i])
-                
-            # flip
-            nr = int(np.random.uniform(1,4))
-            flip_axes = [0,1] #  [0,1,2]
-            axis = np.random.choice(flip_axes,nr)
-            for i in range(nr):
-                image = np.flip(image,axis=axis[i])
+            if augment:
+                nr = int(np.random.uniform(1,4))
+                k = np.random.uniform(0,4,nr).astype('int')
+                #axes = np.asarray([[0,1],[0,2],[1,2]])
+                axes = np.asarray([[0,1]])
+                axes_rnd = axes[np.random.choice(np.linspace(0,len(axes)-1,len(axes)),nr).astype('int')]
+                for i in range(nr):
+                    image = np.rot90(image,k=k[i],axes=axes_rnd[i])
+                    
+                # flip
+                nr = int(np.random.uniform(1,4))
+                flip_axes = [0,1] #  [0,1,2]
+                axis = np.random.choice(flip_axes,nr)
+                for i in range(nr):
+                    image = np.flip(image,axis=axis[i])
 
             image = normalize_array(image)
             image_array.append(image)
@@ -130,7 +138,7 @@ class data_sequence(Sequence):
         return int(max(len(self.train_A), len(self.train_B)) / float(self.batch_size))
 
     def __getitem__(self, idx):  # , use_multiscale_discriminator, use_supervised_learning):if loop_index + batch_size >= min_nr_imgs:
-        if idx >= min(len(self.train_A), len(self.train_B)):
+        if False: #idx >= min(len(self.train_A), len(self.train_B)):
             # If all images soon are used for one domain,
             # randomly pick from this domain
             if len(self.train_A) <= len(self.train_B):
@@ -152,7 +160,7 @@ class data_sequence(Sequence):
                 batch_A = [self.train_A[x] for x in inds]
             elif x1>=len(self.train_A):
                 inds = np.arange(x0,len(self.train_A)-1,1,dtype='int')
-                inds = np.concatonate([inds,np.random.choice(np.linspace(0,len(self.train_A)-1,len(self.train_A),dtype='int'),self.batch_size-inds.shape[0])])
+                inds = np.concatenate([inds,np.random.choice(np.linspace(0,len(self.train_A)-1,len(self.train_A),dtype='int'),self.batch_size-inds.shape[0])])
                 batch_A = [self.train_A[x] for x in inds]
             else:
                 batch_A = self.train_A[x0:x1]
