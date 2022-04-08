@@ -19,6 +19,7 @@ from keras.preprocessing.image import img_to_array
 from keras.initializers import RandomNormal, Constant
 from keras import backend
 import numpy as np
+arr = np.asarray
 import random
 import datetime
 import time
@@ -232,12 +233,16 @@ class ProgCycleGAN():
         K.tensorflow_backend.set_session(tf.Session(config=config))
         
         self.initial_epoch = 0
+        self.initial_imsize = 2
         if resume:         
             self.load_model_and_weights(self.G_A2B)
             self.load_model_and_weights(self.G_B2A)
             self.load_model_and_weights(self.D_A)
             self.load_model_and_weights(self.D_B)
+            print('*** Resuming training at image size {} and epoch {} ***'.format(self.initial_imsize,self.initial_epoch))
         initial_epoch = self.initial_epoch
+        initial_imsize = self.initial_imsize
+       
 
         # ===== Tests ======
         # Simple Model
@@ -254,17 +259,20 @@ class ProgCycleGAN():
         
         epochs = np.zeros(len(prog_G_models),dtype='int') + 200
         batch_size = np.ones(len(prog_G_models),dtype='int')
-        ep = [4,50,50,50,250,250,500,500,2000] #2,4,8,16,32,64,128,256,512
-        #ep = [1,10,10,10,10,10,10,10,200] #2,4,8,16,32,64,128,256,512
+        fadein_fraction = np.zeros(len(prog_G_models),dtype='float') + 0.1
+        im_size = [2,   4,   8,   16,  32,  64,  128,  256,  512]
+        # Number of epochs
+        ep =      [4,   50,  500, 500, 500, 500,  2000,2000, 2000] #
         epochs[:len(ep)] = ep
-        bs = [10,10,5,5,5,5,1]
+        # Batch size
+        bs =      [10,  10,  5,   5,    5,   5,    1,    1,    1]
         batch_size[:len(bs)] = bs
+        # Fadin fraction
+        fr =      [0.25,0.25]
+        fadein_fraction[:len(fr)] = fr
         
-        m_init = 0 # 7=256
-        #breakpoint()
+        m_init = im_size.index(initial_imsize)
         for i in range(m_init,len(prog_G_models)):
-        #if True:
-        #    i = len(prog_G_models)-1
             self.G_model = prog_G_models[i]
             self.G_A2B = prog_G_A2B[i]
             self.G_B2A = prog_G_B2A[i]
@@ -294,8 +302,8 @@ class ProgCycleGAN():
             self.testA_image_names = data["testA_image_names"]
             self.testB_image_names = data["testB_image_names"]
             
-            print(image_shape[i])
-            self.train(epochs=epochs[i], batch_size=batch_size[i], save_interval=self.save_interval, imsize=image_shape[i], max_iter=-1)
+            self.train(epochs=epochs[i], batch_size=batch_size[i], save_interval=self.save_interval, imsize=image_shape[i], max_iter=-1,initial_epoch=initial_epoch,fadein_fraction=fadein_fraction[i])
+            initial_epoch = 0
         #self.load_model_and_generate_synthetic_images()
         
     def weight_initialisation(self):
@@ -521,7 +529,9 @@ class ProgCycleGAN():
                 else:
                     #breakpoint()
                     input_layer = Input(shape=img_shape)
-                    x = ReflectionPadding2D((3, 3))(input_layer)        
+                    if img_shape[0]>16:
+                        x = ReflectionPadding2D((3, 3))(input_layer)        
+                    #else:
                     #x = self.c7Ak(x, 32)
                     x = input_layer
                 
@@ -649,18 +659,26 @@ class ProgCycleGAN():
                         #breakpoint()
                         x = WeightedSum()([mpd,x])
                     
-                if True:
+                if False:
                     #init = self.weight_initialisation()
                     x = Conv2D(1, (1,1))(x) #,kernel_initializer=Constant(0.))(x)
                     #print(x.shape)
                     #x.trainable = False
                     x = Activation('tanh')(x)  # They say they use Relu but really they do not
                 else:
-                    #x = ReflectionPadding2D((3, 3))(x)
-                    #x = Conv2D(self.channels, kernel_size=7, strides=1)(x)
+                    #breakpoint()
+                    if img_shape[0]>16:
+                        x = ReflectionPadding2D((3, 3))(x)
+                        x = Conv2D(self.channels, kernel_size=7, strides=1)(x)
+                    else:
+                        x = Conv2D(1, (1,1))(x)
                     x = Activation('tanh')(x)  # They say they use Relu but really they do not
-                    
-                model1 = Model(input_layer,x)
+                
+                if j==0:
+                    name = 'G_A2B_model'
+                else:
+                    name = 'G_B2A_model'    
+                model1 = Model(input_layer,x,name=name)
                 
                 if j==0:
                     prog_G_A2B.append(model1)
@@ -917,7 +935,7 @@ class ProgCycleGAN():
 
 #===============================================================================
 # Training
-    def train(self, epochs, batch_size=1, save_interval=1, imsize=None, max_iter=-1):
+    def train(self, epochs, batch_size=1, save_interval=1, imsize=None, max_iter=-1, initial_epoch=1, fadein_fraction=0.25):
         def run_training_iteration(loop_index, epoch_iterations, fadein=True, fadein_steps=10, counter=1):
         
             if fadein:
@@ -1076,7 +1094,7 @@ class ProgCycleGAN():
         
         counter = 1
 
-        for epoch in range(1, epochs + 1):
+        for epoch in range(initial_epoch, epochs + 1):
 
             if self.use_data_generator:
                 loop_index = 1
@@ -1094,7 +1112,7 @@ class ProgCycleGAN():
                         real_images_B = real_images_B[:, :, :, np.newaxis]
 
                     # Run all training steps
-                    fadein_fraction = 0.25
+                    #fadein_fraction = 0.25
                     fadein_steps = int(np.ceil(epochs*len(self.data_generator)*fadein_fraction))
                     run_training_iteration(loop_index, self.data_generator.__len__(),fadein_steps=fadein_steps,counter=counter)
 
@@ -1172,10 +1190,10 @@ class ProgCycleGAN():
 
             if epoch % 5 == 0:
                 # self.saveModel(self.G_model)
-                self.saveModel(self.D_A, epoch)
-                self.saveModel(self.D_B, epoch)
-                self.saveModel(self.G_A2B, epoch)
-                self.saveModel(self.G_B2A, epoch)
+                self.saveModel(self.D_A, epoch, imsize[0])
+                self.saveModel(self.D_B, epoch, imsize[0])
+                self.saveModel(self.G_A2B, epoch, imsize[0])
+                self.saveModel(self.G_B2A, epoch, imsize[0])
 
             training_history = {
                 'DA_losses': DA_losses,
@@ -1350,15 +1368,15 @@ class ProgCycleGAN():
 #===============================================================================
 # Save and load
 
-    def saveModel(self, model, epoch):
+    def saveModel(self, model, epoch, imsize):
         # Create folder to save model architecture and weights
         directory = os.path.join(OPATH,'saved_models', self.date_time)
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-        model_path_w = join(OPATH,'saved_models/{}/{}_weights_epoch_{}.hdf5'.format(self.date_time, model.name, epoch))
+        model_path_w = join(OPATH,'saved_models/{}/{}_weights_imsize_{}_epoch_{}.hdf5'.format(self.date_time, model.name, imsize, epoch))
         model.save_weights(model_path_w)
-        model_path_m = join(OPATH,'saved_models/{}/{}_model_epoch_{}.json'.format(self.date_time, model.name, epoch))
+        model_path_m = join(OPATH,'saved_models/{}/{}_model_imsize_{}_epoch_{}.json'.format(self.date_time, model.name, imsize, epoch))
         model.save_weights(model_path_m)
         json_string = model.to_json()
         with open(model_path_m, 'w') as outfile:
@@ -1414,25 +1432,38 @@ class ProgCycleGAN():
         from os import listdir
         path = join(OPATH,'saved_models', '{}'.format(self.date_time))
         weight_files = [f for f in listdir(path) if f.endswith('hdf5') and model.name in f]
-        epoch = []
+        ## TEMP FIX
+        if len(weight_files)==0:
+            weight_files = [f for f in listdir(path) if f.endswith('hdf5') and model.name.replace('_model','') in f]
+        ###########
+        epoch, imsize = [], []
         for f in weight_files:
             try:
-                epoch.append(int(f.replace('{}_weights_epoch_'.format(model.name),'').replace('.hdf5','')))
+                tmp = f.split('_')
+                imsize.append(int(tmp[tmp.index('imsize')+1]))
+                epoch.append(int(tmp[tmp.index('epoch')+1].replace('.hdf5','')))
             except Exception as e:
                 print(e)
                 epoch.append(-1)
+                imsize.append(-1)
+
         epoch = np.asarray(epoch)
-        resume_epoch = np.max(epoch)
-        resume_weights = weight_files[np.argmax(epoch)]
+        imsize = np.asarray(imsize)
+        resume_size = np.max(imsize)
+        inds = np.where(imsize==resume_size)
+        resume_epoch = np.max(epoch[inds])
+        inds = np.where((imsize==resume_size) & (epoch==resume_epoch))
+        #resume_weights = weight_files[np.argmax(epoch)]
+        resume_weights = weight_files[inds[0][0]]
         #path_to_model = os.path.join(OPATH,'images', 'models', '{}.json'.format(model.name))
         path_to_weights = os.path.join(path, resume_weights)
         self.initial_epoch = resume_epoch + 1
-    
+        self.initial_imsize = resume_size
     
         #path_to_model = os.path.join('generate_images', 'models', '{}.json'.format(model.name))
         #path_to_weights = os.path.join('generate_images', 'models', '{}.hdf5'.format(model.name))
         ##model = model_from_json(path_to_model)
-        #model.load_weights(path_to_weights)
+        #model.load_weights(path_to_weights)       
 
     def load_model_and_generate_synthetic_images(self):
         response = input('Are you sure you want to generate synthetic images instead of training? (y/n): ')[0].lower()
@@ -1532,4 +1563,4 @@ class ImagePool():
 
 if __name__ == '__main__':
 
-    GAN = ProgCycleGAN(image_shape=[512,512,1])#,date_time_string='20220328-111210',resume=True)
+    GAN = ProgCycleGAN(image_shape=[512,512,1],date_time_string='20220408-092046',resume=True)
