@@ -130,7 +130,6 @@ class ProgCycleGAN():
 
         # Linear decay of learning rate, for both discriminators and generators
         self.use_linear_decay = True
-        self.decay_epoch = 101  # The epoch where the linear decay of the learning rates start
 
         # Identity loss - sometimes send images from B to G_A2B (and the opposite) to teach identity mappings
         self.use_identity_learning = False
@@ -194,8 +193,6 @@ class ProgCycleGAN():
             # Only store test images
             nr_A_train_imgs = 0
             nr_B_train_imgs = 0
-            #nr_A_test_imgs = 0
-            #nr_B_test_imgs = 0
 
         data = load_data.load_data(nr_of_channels=self.channels,
                                    batch_size=self.batch_size,
@@ -260,6 +257,7 @@ class ProgCycleGAN():
         epochs = np.zeros(len(prog_G_models),dtype='int') + 200
         batch_size = np.ones(len(prog_G_models),dtype='int')
         fadein_fraction = np.zeros(len(prog_G_models),dtype='float') + 0.1
+        decay_epoch_fraction = np.zeros(len(prog_G_models),dtype='float') + 1.
         im_size = [2,   4,   8,   16,  32,  64,  128,  256,  512]
         # Number of epochs
         ep =      [4,   50,  500, 500, 500, 500,  2000,2000, 2000] #
@@ -267,9 +265,11 @@ class ProgCycleGAN():
         # Batch size
         bs =      [10,  10,  5,   5,    5,   5,    1,    1,    1]
         batch_size[:len(bs)] = bs
-        # Fadin fraction
-        fr =      [0.25,0.25]
-        fadein_fraction[:len(fr)] = fr
+        # Fade-in fraction
+        #fr =      [0.25,0.25]
+        #fadein_fraction[:len(fr)] = fr
+        # Decay epoch fraction
+        decay_epoch_fraction[im_size.index(16):] = 0.75
         
         m_init = im_size.index(initial_imsize)
         for i in range(m_init,len(prog_G_models)):
@@ -301,6 +301,9 @@ class ProgCycleGAN():
             self.B_test = data["testB_images"]
             self.testA_image_names = data["testA_image_names"]
             self.testB_image_names = data["testB_image_names"]
+            
+            self.decay_epoch = int(np.ceil(epochs[i]*fadein_fraction[i] + epochs[i]*(1-fadein_fraction[i])* decay_epoch_fraction[i]))  # The epoch where the linear decay of the learning rates start
+            print('LR decay epoch: {}'.format(self.decay_epoch))
             
             self.train(epochs=epochs[i], batch_size=batch_size[i], save_interval=self.save_interval, imsize=image_shape[i], max_iter=-1,initial_epoch=initial_epoch,fadein_fraction=fadein_fraction[i])
             initial_epoch = 0
