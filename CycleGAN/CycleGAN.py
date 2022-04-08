@@ -35,8 +35,8 @@ import nibabel as nib
 PATH = '/mnt/data2/retinasim/retinaGAN2d' #'/mnt/ml/cycleGAN'
 OPATH = '/mnt/data2/retinasim/retinaGAN2d' # '/home/simon/Desktop/Share/cycleGAN'
 
-PATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' #'/mnt/ml/cycleGAN'
-OPATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' # '/home/simon/Desktop/Share/cycleGAN'
+#PATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' #'/mnt/ml/cycleGAN'
+#OPATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' # '/home/simon/Desktop/Share/cycleGAN'
 
 LPATH = join(OPATH,'log')
 
@@ -150,7 +150,7 @@ class CycleGAN():
                 D_B = self.modelDiscriminator()
                 loss_weights_D = [0.5]  # 0.5 since we train on real and synthetic images
             # D_A.summary()
-            breakpoint()
+            #breakpoint()
 
             # Discriminator builds
             image_A = Input(shape=self.img_shape)
@@ -252,6 +252,7 @@ class CycleGAN():
             nr_A_train_imgs = 0
             nr_B_train_imgs = 0
 
+        self.data_generator.imsize = [512,512]
         data = load_data.load_data(nr_of_channels=self.channels,
                                    batch_size=self.batch_size,
                                    nr_A_train_imgs=nr_A_train_imgs,
@@ -259,7 +260,7 @@ class CycleGAN():
                                    nr_A_test_imgs=nr_A_test_imgs,
                                    nr_B_test_imgs=nr_B_test_imgs,
                                    subfolder=image_folder,
-                                   path=PATH)
+                                   path=PATH,imsize=[512,512])
 
         self.A_train = data["trainA_images"]
         self.B_train = data["trainB_images"]

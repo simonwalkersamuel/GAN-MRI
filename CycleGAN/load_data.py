@@ -51,6 +51,8 @@ def load_data(nr_of_channels, batch_size=1, nr_A_train_imgs=None, nr_B_train_img
 def create_image_array(image_list, image_path, nr_of_channels, imsize=[512,512]):
 
     image_array = []
+    #if len(image_list)>0:
+    #    breakpoint()
     for image_name in image_list:
         if True: #image_name[-1].lower() == 'g':  # to avoid e.g. thumbs.db files
             if nr_of_channels == 1:  # Gray scale image -> MR image
@@ -58,11 +60,12 @@ def create_image_array(image_list, image_path, nr_of_channels, imsize=[512,512])
                 if image_name.lower().endswith('.nii'):
                     # NIFTI
                     img = nib.load(path)
-                    image = np.array(img.dataobj)
+                    image = np.array(img.dataobj).astype('uint8')
                     augment = True
                     if 'trainB' in path and image.max()<=1.:
                          #breakpoint()
-                         image *= 256
+                         #image *= 256
+                         pass
                     
                 elif image_name.lower().endswith('.jpg'):
                     image = np.array(Image.open(path).convert('L'))
@@ -72,7 +75,7 @@ def create_image_array(image_list, image_path, nr_of_channels, imsize=[512,512])
                 if imsize is not None:
                     #print('imsize:',imsize)
                     from skimage.transform import resize
-                    image = resize(image, imsize) * 255
+                    image = resize(image, imsize, preserve_range=True) #* 255
                 
                 image = image[:, :, np.newaxis]
             else:                   # RGB image -> 3 channels

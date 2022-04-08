@@ -38,8 +38,8 @@ import nibabel as nib
 PATH = '/mnt/data2/retinasim/retinaGAN2d' #'/mnt/ml/cycleGAN'
 OPATH = '/mnt/data2/retinasim/retinaGAN2d' # '/home/simon/Desktop/Share/cycleGAN'
 
-PATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' #'/mnt/ml/cycleGAN'
-OPATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' # '/home/simon/Desktop/Share/cycleGAN'
+#PATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' #'/mnt/ml/cycleGAN'
+#OPATH = '/mnt/data2/retinasim/retinaGAN2d/horse2zebra' # '/home/simon/Desktop/Share/cycleGAN'
 
 LPATH = join(OPATH,'log')
 
@@ -254,8 +254,8 @@ class ProgCycleGAN():
         
         epochs = np.zeros(len(prog_G_models),dtype='int') + 200
         batch_size = np.ones(len(prog_G_models),dtype='int')
-        ep = [1,10,20,20,50,50] #2,4,8,16,32,64,128
-        #ep = [1,1,1,1,1,1]
+        ep = [4,50,50,50,250,250,500,500,2000] #2,4,8,16,32,64,128,256,512
+        #ep = [1,10,10,10,10,10,10,10,200] #2,4,8,16,32,64,128,256,512
         epochs[:len(ep)] = ep
         bs = [10,10,5,5,5,5,1]
         batch_size[:len(bs)] = bs
@@ -453,8 +453,8 @@ class ProgCycleGAN():
                         print(x.name)
                         x = layer(x)
                     if 'conv2d' in layer.name:
-                        xin = x
                         conv_layers_cur.append(x)
+                    elif 'leaky_re_lu'in layer.name:
                         if not ws_added and i>1 and fadein: # layer.name==model.layers[conv_layers[-1]].name and 
                             mp = MaxPooling2D(pool_size=(2, 2))(conv_inputs[-1])
                             if int(x.shape[-1])!=int(mp.shape[-1]):
